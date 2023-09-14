@@ -5,15 +5,6 @@
       "type": "rust",
       "package": "lob_backend",
       "candid": "src/lob_backend/lob_backend.did"
-    },
-    "lob_frontend": {
-      "type": "assets",
-      "source": [
-        "src/lob_frontend/assets"
-      ],
-      "dependencies": [
-        "lob_backend"
-      ]
     }
   },
   "defaults": {
