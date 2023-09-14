@@ -67,45 +67,21 @@ impl Ord for Order {
     }
 }
 
+impl From<Reverse<Order>> for Order {
+    fn from(other: Reverse<Order>) -> Self {
+        other.0
+    }
+}
+
+impl From<Order> for Reverse<Order> {
+    fn from(value: Order) -> Self {
+        Self(value)
+    }
+}
+
 pub struct OrderBook {
     bids: BinaryHeap<Order>,
     asks: BinaryHeap<Reverse<Order>>,
-}
-
-/// We'd like to treat bids and asks uniformely, but they're binary heaps
-/// of different types. Abstract over this difference with a trait.
-trait OrderQueue {
-    fn pop_best(&mut self) -> Option<Order>;
-    fn push(&mut self, order: Order);
-    fn peek_best(&self) -> Option<&Order>;
-}
-
-impl OrderQueue for BinaryHeap<Order> {
-    fn pop_best(&mut self) -> Option<Order> {
-        self.pop()
-    }
-
-    fn push(&mut self, order: Order) {
-        self.push(order);
-    }
-
-    fn peek_best(&self) -> Option<&Order> {
-        self.peek()
-    }
-}
-
-impl OrderQueue for BinaryHeap<Reverse<Order>> {
-    fn pop_best(&mut self) -> Option<Order> {
-        self.pop().map(|Reverse(order)| order)
-    }
-
-    fn push(&mut self, order: Order) {
-        self.push(Reverse(order));
-    }
-
-    fn peek_best(&self) -> Option<&Order> {
-        self.peek().map(|Reverse(order)| order)
-    }
 }
 
 impl OrderBook {
@@ -152,20 +128,20 @@ impl OrderBook {
     }
 }
 
-fn process_order<T: OrderQueue>(
-    mut order: Order,
-    other_side: &mut T,
-) -> (Vec<Match>, Option<Order>) {
+fn process_order<T>(mut order: Order, other_side: &mut BinaryHeap<T>) -> (Vec<Match>, Option<Order>)
+where
+    T: Into<Order> + From<Order> + Ord + Clone,
+{
     let mut matches = Vec::new();
     while let Some(m) = other_side
-        .peek_best()
-        .and_then(|other| order.try_match(other))
+        .peek()
+        .and_then(|other| Into::into(other.clone()).try_match(&order))
     {
         order.quantity -= m.quantity;
-        let mut other = other_side.pop_best().unwrap();
+        let mut other: Order = Into::into(other_side.pop().unwrap());
         other.quantity -= m.quantity;
         if other.quantity > 0 {
-            other_side.push(other);
+            other_side.push(From::from(other.clone()));
         }
         matches.push(m);
     }
