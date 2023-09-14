@@ -45,7 +45,8 @@ impl Order {
             Some(Match {
                 bid_id,
                 ask_id,
-                // If there's a match
+                // If there's a match, we could use any price between the two orders.
+                // Here we use self.price.
                 price: self.price,
                 quantity,
             })
