@@ -1,9 +1,9 @@
 use candid::{CandidType, Deserialize};
-use std::collections::BinaryHeap;
+use std::{cmp::Reverse, collections::BinaryHeap};
 
 pub type OrderId = u64;
 
-#[derive(CandidType, Deserialize)]
+#[derive(PartialEq, Eq, Clone, CandidType, Deserialize)]
 pub enum Side {
     Buy,
     Sell,
@@ -13,63 +13,11 @@ pub type Price = u64;
 pub type Quantity = u64;
 
 #[derive(PartialEq, Eq, Clone, CandidType, Deserialize)]
-pub struct OrderParameters {
-    price: Price,
-    quantity: Quantity,
-}
-
-#[derive(CandidType, Deserialize)]
 pub struct Order {
     pub id: OrderId,
     pub side: Side,
-    pub parameters: OrderParameters,
-}
-#[derive(PartialEq, Eq, Clone, CandidType, Deserialize)]
-pub struct Bid {
-    pub id: OrderId,
-    pub parameters: OrderParameters,
-}
-
-impl PartialOrd for Bid {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Bid {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.parameters
-            .price
-            .cmp(&other.parameters.price)
-            .then(self.id.cmp(&other.id))
-    }
-}
-
-#[derive(PartialEq, Eq, Clone, CandidType, Deserialize)]
-pub struct Ask {
-    id: OrderId,
-    parameters: OrderParameters,
-}
-
-impl PartialOrd for Ask {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Ask {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.parameters
-            .price
-            .cmp(&other.parameters.price)
-            .reverse()
-            .then(self.id.cmp(&other.id))
-    }
-}
-
-pub struct OrderBook {
-    bids: BinaryHeap<Bid>,
-    asks: BinaryHeap<Ask>,
+    pub price: Price,
+    pub quantity: Quantity,
 }
 
 #[derive(CandidType, Deserialize)]
@@ -78,6 +26,86 @@ pub struct Match {
     pub ask_id: OrderId,
     pub price: Price,
     pub quantity: Quantity,
+}
+
+impl Order {
+    pub fn try_match(&self, other: &Self) -> Option<Match> {
+        if self.quantity > 0
+            && other.quantity > 0
+            && self.side != other.side
+            && ((self.side == Side::Buy && self.price >= other.price)
+                || (self.side == Side::Sell && self.price <= other.price))
+        {
+            let quantity = std::cmp::min(self.quantity, other.quantity);
+            let (bid_id, ask_id) = if self.side == Side::Buy {
+                (self.id, other.id)
+            } else {
+                (other.id, self.id)
+            };
+            Some(Match {
+                bid_id,
+                ask_id,
+                // If there's a match
+                price: self.price,
+                quantity,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl PartialOrd for Order {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Order {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.price.cmp(&other.price).then(self.id.cmp(&other.id))
+    }
+}
+
+pub struct OrderBook {
+    bids: BinaryHeap<Order>,
+    asks: BinaryHeap<Reverse<Order>>,
+}
+
+/// We'd like to treat bids and asks uniformely, but they're binary heaps
+/// of different types. Abstract over this difference with a trait.
+trait OrderQueue {
+    fn pop_best(&mut self) -> Option<Order>;
+    fn push(&mut self, order: Order);
+    fn peek_best(&self) -> Option<&Order>;
+}
+
+impl OrderQueue for BinaryHeap<Order> {
+    fn pop_best(&mut self) -> Option<Order> {
+        self.pop()
+    }
+
+    fn push(&mut self, order: Order) {
+        self.push(order);
+    }
+
+    fn peek_best(&self) -> Option<&Order> {
+        self.peek()
+    }
+}
+
+impl OrderQueue for BinaryHeap<Reverse<Order>> {
+    fn pop_best(&mut self) -> Option<Order> {
+        self.pop().map(|Reverse(order)| order)
+    }
+
+    fn push(&mut self, order: Order) {
+        self.push(Reverse(order));
+    }
+
+    fn peek_best(&self) -> Option<&Order> {
+        self.peek().map(|Reverse(order)| order)
+    }
 }
 
 impl OrderBook {
@@ -89,93 +117,66 @@ impl OrderBook {
     }
 
     /// Add an order to the order book; if it crosses with existing orders, return the match(es).
-    /// Fulfill as much of the order as possible, and just keep the remainder on the order book.
+    /// Fill as much of the order as possible, and just keep the remainder on the order book.
     pub fn add_order(&mut self, order: Order) -> Vec<Match> {
-        assert!(order.parameters.quantity > 0);
-        assert!(order.parameters.price > 0);
-        let mut matches = Vec::new();
-        let mut unfulfilled = order.parameters.quantity;
+        assert!(order.quantity > 0);
+        assert!(order.price > 0);
         match order.side {
             Side::Buy => {
-                while unfulfilled > 0
-                    && self
-                        .best_ask()
-                        .map(|ask| ask.parameters.price <= unfulfilled)
-                        .unwrap_or(false)
-                {
-                    let mut ask = self.asks.pop().unwrap();
-                    let quantity = std::cmp::min(unfulfilled, ask.parameters.quantity);
-                    matches.push(Match {
-                        bid_id: order.id,
-                        ask_id: ask.id,
-                        price: ask.parameters.price,
-                        quantity,
-                    });
-                    unfulfilled -= quantity;
-                    ask.parameters.quantity -= quantity;
-                    if ask.parameters.quantity > 0 {
-                        self.asks.push(ask);
-                    }
+                let (matches, opt_remaining_bid) = process_order(order, &mut self.asks);
+                if let Some(remaining_bid) = opt_remaining_bid {
+                    self.bids.push(remaining_bid);
                 }
-                if unfulfilled > 0 {
-                    self.bids.push(Bid {
-                        id: order.id,
-                        parameters: OrderParameters {
-                            price: order.parameters.price,
-                            quantity: unfulfilled,
-                        },
-                    });
-                }
+                matches
             }
             Side::Sell => {
-                while unfulfilled > 0
-                    && self
-                        .best_bid()
-                        .map(|bid| bid.parameters.price >= unfulfilled)
-                        .unwrap_or(false)
-                {
-                    let mut bid = self.bids.pop().unwrap();
-                    let quantity = std::cmp::min(unfulfilled, bid.parameters.quantity);
-                    matches.push(Match {
-                        bid_id: bid.id,
-                        ask_id: order.id,
-                        price: bid.parameters.price,
-                        quantity,
-                    });
-                    unfulfilled -= quantity;
-                    bid.parameters.quantity -= quantity;
-                    if bid.parameters.quantity > 0 {
-                        self.bids.push(bid);
-                    }
+                let (matches, opt_remaining_ask) = process_order(order, &mut self.bids);
+                if let Some(remaining_ask) = opt_remaining_ask {
+                    self.asks.push(Reverse(remaining_ask));
                 }
-                if unfulfilled > 0 {
-                    self.asks.push(Ask {
-                        id: order.id,
-                        parameters: OrderParameters {
-                            price: order.parameters.price,
-                            quantity: unfulfilled,
-                        },
-                    });
-                }
+                matches
             }
         }
-
-        matches
     }
 
-    fn best_bid(&self) -> Option<&Bid> {
-        self.bids.peek()
-    }
-
-    fn best_ask(&self) -> Option<&Ask> {
-        self.asks.peek()
-    }
-
-    pub fn list_bids(&self) -> Vec<Bid> {
+    pub fn list_bids(&self) -> Vec<Order> {
         self.bids.iter().cloned().collect()
     }
 
-    pub fn list_asks(&self) -> Vec<Ask> {
-        self.asks.iter().cloned().collect()
+    pub fn list_asks(&self) -> Vec<Order> {
+        self.asks
+            .iter()
+            .cloned()
+            .map(|Reverse(order)| order)
+            .collect()
     }
 }
+
+fn process_order<T: OrderQueue>(
+    mut order: Order,
+    other_side: &mut T,
+) -> (Vec<Match>, Option<Order>) {
+    let mut matches = Vec::new();
+    while let Some(m) = other_side
+        .peek_best()
+        .and_then(|other| order.try_match(other))
+    {
+        order.quantity -= m.quantity;
+        let mut other = other_side.pop_best().unwrap();
+        other.quantity -= m.quantity;
+        if other.quantity > 0 {
+            other_side.push(other);
+        }
+        matches.push(m);
+    }
+    (
+        matches,
+        if order.quantity > 0 {
+            Some(order)
+        } else {
+            None
+        },
+    )
+}
+
+pub mod canister;
