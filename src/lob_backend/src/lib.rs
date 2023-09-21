@@ -28,14 +28,17 @@ pub struct Match {
     pub quantity: Quantity,
 }
 
+fn is_match(order: &Order, other: &Order) -> bool {
+    order.quantity > 0
+        && other.quantity > 0
+        && order.side != other.side
+        && ((order.side == Side::Buy && order.price >= other.price)
+            || (order.side == Side::Sell && order.price <= other.price))
+}
+
 impl Order {
     pub fn try_match(&self, other: &Self) -> Option<Match> {
-        if self.quantity > 0
-            && other.quantity > 0
-            && self.side != other.side
-            && ((self.side == Side::Buy && self.price >= other.price)
-                || (self.side == Side::Sell && self.price <= other.price))
-        {
+        if is_match(self, other) {
             let quantity = std::cmp::min(self.quantity, other.quantity);
             let (bid_id, ask_id) = if self.side == Side::Buy {
                 (self.id, other.id)
@@ -134,6 +137,23 @@ where
     T: Into<Order> + From<Order> + Ord + Clone,
 {
     let mut matches = Vec::new();
+    for _i in 1..other_side.len() {
+        if let Some(m) = other_side
+            .peek()
+            .and_then(|other| Into::into(other.clone()).try_match(&order))
+        {
+            order.quantity -= m.quantity;
+            let mut other: Order = Into::into(other_side.pop().unwrap());
+            other.quantity -= m.quantity;
+            if other.quantity > 0 {
+                other_side.push(From::from(other.clone()));
+            }
+            matches.push(m);
+        } else {
+            break;
+        }
+    }
+    /* hax doesn't deal with while loops yet
     while let Some(m) = other_side
         .peek()
         .and_then(|other| Into::into(other.clone()).try_match(&order))
@@ -146,6 +166,7 @@ where
         }
         matches.push(m);
     }
+    */
     (
         matches,
         if order.quantity > 0 {
