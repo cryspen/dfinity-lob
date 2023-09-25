@@ -12,11 +12,17 @@ It's the caller's responsibility to ensure that order IDs are unique.
 
 To test locally, first get the Internet Computer SDK.
 
+**NOTE:** Set the dfx root dir with the environment variable `DFX_INSTALL_ROOT`
+to avoid installing with `sudo`.
+
 ```bash
 sh -ci "$(curl -fsSL https://internetcomputer.org/install.sh)"
 ```
 
 Then run the following commands:
+
+**NOTE:** This requires `wasmtime` to be in path. Get it from
+https://github.com/bytecodealliance/wasmtime.
 
 ```bash
 # Starts the replica, running in the background
@@ -37,4 +43,15 @@ dfx canister uninstall-code lob_backend
 # Say you want to use your current principal as the order admin
 dfx deploy --argument "opt (principal \"$(dfx identity get-principal)\")" --argument-type idl lob_backend
 ```
+## Extract F*
 
+Get `hax` from https://github.com/hacspec/hacspec-v2 and follow the installation
+instructions there.
+
+Extraction to F* can then be done with the following command.
+
+```bash
+cargo hax into -i '-canister::**' fstar
+```
+
+The extracted code will be in `src/lob_backend/proofs/`.
